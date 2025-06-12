@@ -63,15 +63,23 @@ class MCPServer:
             }
         }
     
-    async def handle_message(self, message: Dict[str, Any]) -> Dict[str, Any]:
+    async def handle_message(self, message: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """Handle incoming MCP messages"""
         try:
             method = message.get("method")
             params = message.get("params", {})
             msg_id = message.get("id")
             
+            # Handle notifications (messages without id) - these don't need responses
+            if msg_id is None:
+                print(f"Received notification: {method}", file=sys.stderr)
+                return None
+            
             if method == "initialize":
                 return self.handle_initialize(msg_id, params)
+            elif method == "initialized":
+                # This is a notification sent after initialize - no response needed
+                return None
             elif method == "tools/list":
                 return self.handle_tools_list(msg_id)
             elif method == "tools/call":
@@ -80,6 +88,8 @@ class MCPServer:
                 return self.handle_resources_list(msg_id)
             elif method == "resources/read":
                 return self.handle_resources_read(msg_id, params)
+            elif method == "ping":
+                return {"jsonrpc": "2.0", "id": msg_id, "result": {}}
             else:
                 return {
                     "jsonrpc": "2.0",
@@ -256,33 +266,43 @@ async def main():
     print("Ready for connections.", file=sys.stderr)
     
     # Read messages from stdin and write responses to stdout
-    while True:
-        try:
+    try:
+        while True:
             line = sys.stdin.readline()
             if not line:
+                print("No more input, exiting...", file=sys.stderr)
                 break
             
-            message = json.loads(line.strip())
-            response = await server.handle_message(message)
-            
-            print(json.dumps(response))
-            sys.stdout.flush()
-            
-        except json.JSONDecodeError as e:
-            error_response = {
-                "jsonrpc": "2.0",
-                "error": {
-                    "code": -32700,
-                    "message": f"Parse error: {str(e)}"
+            line = line.strip()
+            if not line:
+                continue
+                
+            try:
+                message = json.loads(line)
+                print(f"Received message: {message.get('method', 'unknown')}", file=sys.stderr)
+                
+                response = await server.handle_message(message)
+                
+                if response is not None:  # Don't send response for notifications
+                    print(json.dumps(response))
+                    sys.stdout.flush()
+                    
+            except json.JSONDecodeError as e:
+                print(f"JSON decode error: {e}", file=sys.stderr)
+                error_response = {
+                    "jsonrpc": "2.0",
+                    "error": {
+                        "code": -32700,
+                        "message": f"Parse error: {str(e)}"
+                    }
                 }
-            }
-            print(json.dumps(error_response))
-            sys.stdout.flush()
-        except KeyboardInterrupt:
-            break
-        except Exception as e:
-            print(f"Unexpected error: {e}", file=sys.stderr)
-            break
+                print(json.dumps(error_response))
+                sys.stdout.flush()
+                
+    except KeyboardInterrupt:
+        print("Received interrupt, shutting down...", file=sys.stderr)
+    except Exception as e:
+        print(f"Unexpected error in main loop: {e}", file=sys.stderr)
 
 if __name__ == "__main__":
     asyncio.run(main())
